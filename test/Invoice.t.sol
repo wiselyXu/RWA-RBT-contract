@@ -37,7 +37,7 @@ contract InvoiceTest is Test {
         DeployInvoice deployer = new DeployInvoice();
         (invoice, vault, rbt, config) = deployer.run();
 
-        uint256 deployerKey = config.activeNetworkConfig();
+        uint256 deployerKey = config.getActiveNetworkConfig().deployerKey;
         owner = vm.addr(deployerKey);
     }
 

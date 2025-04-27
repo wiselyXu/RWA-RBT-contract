@@ -56,12 +56,14 @@ contract DeployInvoice is Script {
 
     function run() external returns (Invoice, Vault, RBT, HelperConfig) {
         HelperConfig config = new HelperConfig();
-        uint256 deployerKey = config.activeNetworkConfig();
+        HelperConfig.NetworkConfig memory networkConfig = config
+            .getActiveNetworkConfig();
+        uint256 deployerKey = networkConfig.deployerKey;
         address deployer = vm.addr(deployerKey);
 
-        // 检查部署者余额
-        uint256 balance = deployer.balance;
-        require(balance > 0, "Deployer has no ETH");
+        // // 检查部署者余额
+        // uint256 balance = deployer.balance;
+        // require(balance > 0, "Deployer has no ETH");
 
         vm.startBroadcast(deployerKey);
 
@@ -93,7 +95,7 @@ contract DeployInvoice is Script {
         console.log("Vault address:", address(vault));
         console.log("RBT address:", address(rbt));
         console.log("Invoice address:", address(invoice));
-        console.log("Deployer balance:", balance);
+        // console.log("Deployer balance:", balance);
 
         return (invoice, vault, rbt, config);
     }

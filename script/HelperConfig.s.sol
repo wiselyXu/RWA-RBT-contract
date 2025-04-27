@@ -8,7 +8,7 @@ contract HelperConfig is Script {
         uint256 deployerKey;
     }
 
-    NetworkConfig public activeNetworkConfig;
+    NetworkConfig internal activeNetworkConfig;
     uint256 public constant PHAROS_TESTNET_CHAIN_ID = 50002;
     uint256 public constant ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
     uint256 public constant DEFAULT_ANVIL_KEY =
@@ -50,5 +50,13 @@ contract HelperConfig is Script {
     {
         // 使用环境变量中的私钥对应的地址
         return NetworkConfig({deployerKey: DEFAULT_ANVIL_KEY});
+    }
+
+    function getActiveNetworkConfig()
+        public
+        view
+        returns (NetworkConfig memory)
+    {
+        return activeNetworkConfig;
     }
 }
