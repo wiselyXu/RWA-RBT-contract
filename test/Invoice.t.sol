@@ -248,6 +248,49 @@ contract InvoiceTest is Test {
         result = invoice.queryInvoices(params);
         assertEq(result.total, 1);
         assertEq(result.invoices[0].invoiceNumber, "INV001");
+
+        // 空参数查询（返回所有票据）
+        params = Invoice.QueryParams({
+            batchId: "",
+            payer: address(0),
+            payee: address(0),
+            invoiceNumber: "",
+            checkValid: true
+        });
+        result = invoice.queryInvoices(params);
+        assertEq(result.total, 2);
+        assertEq(result.invoices[0].invoiceNumber, "INV001");
+        assertEq(result.invoices[1].invoiceNumber, "INV002");
+
+        // 测试无效票据查询
+        vm.startPrank(owner);
+        invoice.invalidateInvoice("INV001");
+        vm.stopPrank();
+
+        // 检查有效性查询
+        params = Invoice.QueryParams({
+            batchId: "",
+            payer: address(0),
+            payee: address(0),
+            invoiceNumber: "",
+            checkValid: true
+        });
+        result = invoice.queryInvoices(params);
+        assertEq(result.total, 1);
+        assertEq(result.invoices[0].invoiceNumber, "INV002");
+
+        // 不检查有效性查询
+        params = Invoice.QueryParams({
+            batchId: "",
+            payer: address(0),
+            payee: address(0),
+            invoiceNumber: "",
+            checkValid: false
+        });
+        result = invoice.queryInvoices(params);
+        assertEq(result.total, 2);
+        assertEq(result.invoices[0].invoiceNumber, "INV001");
+        assertEq(result.invoices[1].invoiceNumber, "INV002");
     }
 
     function test_InvalidateInvoice() public {

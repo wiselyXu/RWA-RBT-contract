@@ -56,7 +56,6 @@ contract Invoice is
     mapping(address => string[]) public payeeInvoices;
     // 存储债务人的所有票据
     mapping(address => string[]) private payerInvoices;
-
     // 票据打包批次结构
     struct InvoiceTokenBatch {
         string batchId; // 批次ID
@@ -77,9 +76,12 @@ contract Invoice is
     mapping(string => InvoiceTokenBatch) public tokenBatches;
     // 用户地址 => 批次ID数组
     mapping(address => string[]) public userBatches;
-
     // 版本号
     uint256 public version;
+
+    // 存储所有票据编号的映射和计数器
+    mapping(uint256 => string) private allInvoiceNumbersMap;
+    uint256 private allInvoiceNumbersCount;
 
     // 事件
     event InvoiceCreated(
@@ -207,6 +209,11 @@ contract Invoice is
             invoices[invoice.invoiceNumber] = invoice;
             payeeInvoices[invoice.payee].push(invoice.invoiceNumber);
             payerInvoices[invoice.payer].push(invoice.invoiceNumber);
+
+            // 存储到所有票据映射中
+            allInvoiceNumbersMap[allInvoiceNumbersCount] = invoice
+                .invoiceNumber;
+            allInvoiceNumbersCount++;
 
             // 触发事件
             emit InvoiceCreated(
@@ -466,19 +473,21 @@ contract Invoice is
             InvoiceData[] memory result = new InvoiceData[](
                 batch.invoiceNumbers.length
             );
-            uint256 count = 0;
+            uint256 countBatchId = 0;
             for (uint256 i = 0; i < batch.invoiceNumbers.length; i++) {
                 InvoiceData memory invoice = invoices[batch.invoiceNumbers[i]];
                 if (invoice.isValid || !params.checkValid) {
-                    result[count] = invoice;
-                    count++;
+                    result[countBatchId] = invoice;
+                    countBatchId++;
                 }
             }
-            InvoiceData[] memory trimmedResult = new InvoiceData[](count);
-            for (uint256 i = 0; i < count; i++) {
+            InvoiceData[] memory trimmedResult = new InvoiceData[](
+                countBatchId
+            );
+            for (uint256 i = 0; i < countBatchId; i++) {
                 trimmedResult[i] = result[i];
             }
-            return QueryResult({invoices: trimmedResult, total: count});
+            return QueryResult({invoices: trimmedResult, total: countBatchId});
         }
 
         // 如果指定了债权人或债务人，返回对应的票据
@@ -493,22 +502,41 @@ contract Invoice is
             InvoiceData[] memory result = new InvoiceData[](
                 invoiceNumbers.length
             );
-            uint256 count = 0;
+            uint256 countPayee = 0;
             for (uint256 i = 0; i < invoiceNumbers.length; i++) {
                 InvoiceData memory invoice = invoices[invoiceNumbers[i]];
                 if (invoice.isValid || !params.checkValid) {
-                    result[count] = invoice;
-                    count++;
+                    result[countPayee] = invoice;
+                    countPayee++;
                 }
             }
-            InvoiceData[] memory trimmedResult = new InvoiceData[](count);
-            for (uint256 i = 0; i < count; i++) {
+            InvoiceData[] memory trimmedResult = new InvoiceData[](countPayee);
+            for (uint256 i = 0; i < countPayee; i++) {
                 trimmedResult[i] = result[i];
             }
-            return QueryResult({invoices: trimmedResult, total: count});
+            return QueryResult({invoices: trimmedResult, total: countPayee});
         }
 
-        // 如果没有指定任何条件，返回空结果
-        return QueryResult({invoices: new InvoiceData[](0), total: 0});
+        // 如果没有指定任何条件，返回所有票据
+        uint256 totalInvoices = 0;
+        for (uint256 i = 0; i < allInvoiceNumbersCount; i++) {
+            if (
+                invoices[allInvoiceNumbersMap[i]].isValid || !params.checkValid
+            ) {
+                totalInvoices++;
+            }
+        }
+
+        InvoiceData[] memory allInvoices = new InvoiceData[](totalInvoices);
+        uint256 count = 0;
+        for (uint256 i = 0; i < allInvoiceNumbersCount; i++) {
+            InvoiceData memory invoice = invoices[allInvoiceNumbersMap[i]];
+            if (invoice.isValid || !params.checkValid) {
+                allInvoices[count] = invoice;
+                count++;
+            }
+        }
+
+        return QueryResult({invoices: allInvoices, total: totalInvoices});
     }
 }

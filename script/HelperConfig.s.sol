@@ -11,6 +11,7 @@ contract HelperConfig is Script {
     NetworkConfig internal activeNetworkConfig;
     uint256 public constant PHAROS_TESTNET_CHAIN_ID = 50002;
     uint256 public constant ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
+    uint256 public constant MANTLE_TESTNET_CHAIN_ID = 5003;
     uint256 public constant DEFAULT_ANVIL_KEY =
         0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
@@ -22,6 +23,8 @@ contract HelperConfig is Script {
             activeNetworkConfig = getPharosTestnetConfig();
         } else if (block.chainid == ARBITRUM_SEPOLIA_CHAIN_ID) {
             activeNetworkConfig = getArbitrumSepoliaConfig();
+        } else if (block.chainid == MANTLE_TESTNET_CHAIN_ID) {
+            activeNetworkConfig = getMantleTestnetConfig();
         } else {
             activeNetworkConfig = getOrCreateAnvilConfig();
         }
@@ -36,6 +39,14 @@ contract HelperConfig is Script {
     }
 
     function getArbitrumSepoliaConfig()
+        public
+        view
+        returns (NetworkConfig memory)
+    {
+        return NetworkConfig({deployerKey: vm.envUint("PRIVATE_KEY")});
+    }
+
+    function getMantleTestnetConfig()
         public
         view
         returns (NetworkConfig memory)
