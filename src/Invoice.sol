@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {IVault} from "./interfaces/IVault.sol";
+import {IRBT} from "./interfaces/IRBT.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-// Vault 接口
-interface IVault {
-    function deposit(address token, uint256 amount) external;
-}
-
-// RBT Token 接口
-interface IRBT {
-    function mintToken(address to, uint256 amount) external;
-}
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/draft-IERC20Permit.sol";
 
 /**
  * @title Invoice
@@ -83,6 +76,9 @@ contract Invoice is
     mapping(uint256 => string) private allInvoiceNumbersMap;
     uint256 private allInvoiceNumbersCount;
 
+    // 存储每个批次已售出的份额
+    mapping(string => uint256) private batchSoldAmount;
+
     // 事件
     event InvoiceCreated(
         string indexed invoiceNumber,
@@ -113,6 +109,30 @@ contract Invoice is
         uint256 amount,
         uint256 timestamp
     );
+    event NativeSharePurchased(
+        string indexed batchId,
+        address indexed buyer,
+        uint256 amount,
+        uint256 timestamp
+    );
+    event InvoiceRepaid(
+        string indexed batchId,
+        address indexed payer,
+        uint256 amount,
+        uint256 timestamp
+    );
+    event NativeInvoiceRepaid(
+        string indexed batchId,
+        address indexed payer,
+        uint256 amount,
+        uint256 timestamp
+    );
+    event InvestorWithdrawn(
+        address indexed investor,
+        uint256 amount,
+        address token,
+        uint256 timestamp
+    );
 
     // 错误
     error Invoice__InvalidInvoiceNumber();
@@ -135,6 +155,11 @@ contract Invoice is
     error Invoice__BatchNotIssued();
     error Invoice__InsufficientBalance();
     error Invoice__TransferFailed();
+    error Invoice__UnauthorizedRepayment();
+    error InvalidAmount();
+    error InvalidInvestor();
+    error InvalidSignature();
+    error SignatureExpired();
 
     // 查询结果结构
     struct QueryResult {
@@ -359,6 +384,41 @@ contract Invoice is
     }
 
     /**
+     * @dev 使用原生代币购买份额
+     * @param _batchId 批次ID
+     */
+    function purchaseSharesWithNativeToken(
+        string calldata _batchId
+    ) external payable whenNotPaused nonReentrant {
+        InvoiceTokenBatch memory batch = tokenBatches[_batchId];
+
+        // 验证批次状态
+        if (!batch.isIssued) revert Invoice__BatchNotIssued();
+        if (msg.value == 0) revert Invoice__InvalidAmount();
+
+        // 验证购买金额是否超过剩余额度
+        uint256 remainingAmount = batch.totalAmount - batchSoldAmount[_batchId];
+        if (msg.value > remainingAmount) revert Invoice__InsufficientBalance();
+
+        // 更新已售出金额
+        batchSoldAmount[_batchId] += msg.value;
+
+        // 转移原生代币给债权人
+        (bool success, ) = batch.payee.call{value: msg.value}("");
+        if (!success) revert Invoice__TransferFailed();
+
+        // 铸造 RBT Token
+        IRBT(rbtAddress).mintToken(msg.sender, msg.value);
+
+        emit NativeSharePurchased(
+            _batchId,
+            msg.sender,
+            msg.value,
+            block.timestamp
+        );
+    }
+
+    /**
      * @dev 获取批次信息
      * @param _batchId 批次ID
      */
@@ -538,5 +598,138 @@ contract Invoice is
         }
 
         return QueryResult({invoices: allInvoices, total: totalInvoices});
+    }
+
+    /**
+     * @dev 获取批次已售出金额
+     * @param _batchId 批次ID
+     */
+    function getBatchSoldAmount(
+        string calldata _batchId
+    ) external view returns (uint256) {
+        return batchSoldAmount[_batchId];
+    }
+
+    /**
+     * @dev 债务人使用稳定币还款
+     * @param _batchId 批次ID
+     * @param _amount 还款金额
+     */
+    function repayInvoice(
+        string calldata _batchId,
+        uint256 _amount
+    ) external whenNotPaused nonReentrant {
+        InvoiceTokenBatch memory batch = tokenBatches[_batchId];
+        if (!batch.isSigned) revert Invoice__BatchNotFound();
+        if (msg.sender != batch.payer) revert Invoice__UnauthorizedRepayment();
+        if (_amount == 0) revert Invoice__InvalidAmount();
+
+        // 获取稳定币合约
+        IERC20 stableToken = IERC20(batch.stableToken);
+
+        // 转移稳定币到 Vault
+        stableToken.safeTransferFrom(msg.sender, vaultAddress, _amount);
+
+        // 调用 Vault 的 deposit 函数
+        IVault(vaultAddress).deposit(batch.stableToken, _amount);
+
+        emit InvoiceRepaid(_batchId, msg.sender, _amount, block.timestamp);
+    }
+
+    /**
+     * @dev 债务人使用原生代币还款
+     * @param _batchId 批次ID
+     */
+    function repayInvoiceWithNativeToken(
+        string calldata _batchId
+    ) external payable whenNotPaused nonReentrant {
+        InvoiceTokenBatch memory batch = tokenBatches[_batchId];
+        if (!batch.isSigned) revert Invoice__BatchNotFound();
+        if (msg.sender != batch.payer) revert Invoice__UnauthorizedRepayment();
+        if (msg.value == 0) revert Invoice__InvalidAmount();
+
+        // 调用 Vault 的 deposit 函数，传入原生代币
+        IVault(vaultAddress).deposit{value: msg.value}(address(0), msg.value);
+
+        emit NativeInvoiceRepaid(
+            _batchId,
+            msg.sender,
+            msg.value,
+            block.timestamp
+        );
+    }
+
+    /**
+     * @notice 投资人取款（使用 ERC20Permit）
+     * @param amount 取款金额
+     * @param token 代币地址
+     * @param deadline 签名过期时间
+     * @param v 签名 v 值
+     * @param r 签名 r 值
+     * @param s 签名 s 值
+     */
+    function withdrawWithPermit(
+        uint256 amount,
+        address token,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        if (msg.sender == address(0)) revert InvalidInvestor();
+        if (block.timestamp > deadline) revert SignatureExpired();
+
+        // 使用 ERC20Permit 授权
+        IERC20Permit(rbtAddress).permit(
+            msg.sender,
+            address(this),
+            amount,
+            deadline,
+            v,
+            r,
+            s
+        );
+
+        // 销毁 RBT 代币
+        IRBT(rbtAddress).burnToken(msg.sender, amount);
+
+        // 从 Vault 转账给投资人
+        if (token == address(0)) {
+            // 原生代币
+            IVault(vaultAddress).withdraw(address(0), msg.sender, amount);
+        } else {
+            // ERC20 代币
+            IVault(vaultAddress).withdraw(token, msg.sender, amount);
+        }
+
+        emit InvestorWithdrawn(msg.sender, amount, token, block.timestamp);
+    }
+
+    /**
+     * @notice 投资人取款（使用 approve）
+     * @param amount 取款金额
+     * @param token 代币地址
+     */
+    function withdraw(
+        uint256 amount,
+        address token
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        if (msg.sender == address(0)) revert InvalidInvestor();
+
+        // 销毁 RBT 代币
+        IRBT(rbtAddress).burnToken(msg.sender, amount);
+
+        // 从 Vault 转账给投资人
+        if (token == address(0)) {
+            // 原生代币
+            IVault(vaultAddress).withdraw(address(0), msg.sender, amount);
+        } else {
+            // ERC20 代币
+            IVault(vaultAddress).withdraw(token, msg.sender, amount);
+        }
+
+        emit InvestorWithdrawn(msg.sender, amount, token, block.timestamp);
     }
 }

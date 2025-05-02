@@ -11,7 +11,7 @@ contract UpgradeInvoice is Script {
         HelperConfig config = new HelperConfig();
         uint256 deployerKey = config.getActiveNetworkConfig().deployerKey;
 
-        // 获取代理地址
+        // 获取代理合约地址
         address proxyAddress = vm.envAddress("INVOICE_PROXY_ADDRESS_MANTLE");
         require(proxyAddress != address(0), "Invalid proxy address");
 
@@ -26,7 +26,7 @@ contract UpgradeInvoice is Script {
         );
 
         // 升级代理合约
-        Invoice proxy = Invoice(proxyAddress);
+        Invoice proxy = Invoice(payable(proxyAddress));
         proxy.upgradeTo(address(newImplementation));
         console.log("Proxy upgraded to new implementation");
 

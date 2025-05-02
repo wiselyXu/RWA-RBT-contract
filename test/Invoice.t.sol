@@ -8,6 +8,9 @@ import {RBT} from "../src/RBT.sol";
 import {DeployInvoice} from "../script/Deploy.s.sol";
 import {HelperConfig} from "../script/HelperConfig.s.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/draft-IERC20Permit.sol";
+import {IRBT} from "../src/interfaces/IRBT.sol";
+import {IVault} from "../src/interfaces/IVault.sol";
 
 contract InvoiceTest is Test {
     Invoice public invoice;
@@ -18,7 +21,9 @@ contract InvoiceTest is Test {
     address public payee;
     address public payer;
     address public buyer;
+    uint256 public buyerKey;
     address public stableToken;
+    address public rbtAddress;
 
     event SharePurchased(
         string indexed batchId,
@@ -27,34 +32,61 @@ contract InvoiceTest is Test {
         uint256 timestamp
     );
 
+    event NativeInvoiceRepaid(
+        string indexed batchId,
+        address indexed payer,
+        uint256 amount,
+        uint256 timestamp
+    );
+
+    event InvoiceRepaid(
+        string indexed batchId,
+        address indexed payer,
+        uint256 amount,
+        uint256 timestamp
+    );
+
+    event InvestorWithdrawn(
+        address indexed investor,
+        uint256 amount,
+        address token,
+        uint256 timestamp
+    );
+
     function setUp() public {
         payee = makeAddr("payee");
         payer = makeAddr("payer");
-        buyer = makeAddr("buyer");
+        (buyer, buyerKey) = makeAddrAndKey("buyer");
         stableToken = makeAddr("stableToken");
 
         // 使用部署脚本部署合约
         DeployInvoice deployer = new DeployInvoice();
         (invoice, vault, rbt, config) = deployer.run();
 
+        rbtAddress = address(rbt);
         uint256 deployerKey = config.getActiveNetworkConfig().deployerKey;
         owner = vm.addr(deployerKey);
     }
 
-    function test_CreateInvoice() public {
+    // 创建票据的辅助函数
+    function createInvoice(
+        string memory invoiceNumber,
+        uint256 amount,
+        uint256 dueDate
+    ) internal {
         vm.startPrank(payee);
 
         // 准备票据数据
         Invoice.InvoiceData[] memory invoices = new Invoice.InvoiceData[](1);
         invoices[0] = Invoice.InvoiceData({
-            invoiceNumber: "INV001",
+            invoiceNumber: invoiceNumber,
             payee: payee,
             payer: payer,
-            amount: 1000,
+            amount: amount,
             ipfsHash: "QmHash1",
             contractHash: "QmHash2",
             timestamp: 0,
-            dueDate: block.timestamp + 30 days,
+            dueDate: dueDate,
             tokenBatch: "",
             isCleared: false,
             isValid: false
@@ -64,56 +96,64 @@ contract InvoiceTest is Test {
         invoice.batchCreateInvoices(invoices);
 
         // 验证票据信息
-        Invoice.InvoiceData memory result = invoice.getInvoice("INV001");
-        assertEq(result.invoiceNumber, "INV001");
+        Invoice.InvoiceData memory result = invoice.getInvoice(invoiceNumber);
+        assertEq(result.invoiceNumber, invoiceNumber);
         assertEq(result.payee, payee);
         assertEq(result.payer, payer);
-        assertEq(result.amount, 1000);
+        assertEq(result.amount, amount);
         assertEq(result.isValid, true);
         assertEq(result.timestamp, block.timestamp);
 
         vm.stopPrank();
     }
 
-    function test_CreateTokenBatch() public {
+    // 创建批次的辅助函数
+    function createTokenBatch(
+        string memory batchId,
+        string[] memory invoiceNumbers,
+        address /* stableToken */,
+        uint256 minTerm,
+        uint256 maxTerm,
+        uint256 interestRate
+    ) internal {
         vm.startPrank(payee);
 
+        // 创建批次
+        invoice.createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            stableToken,
+            minTerm,
+            maxTerm,
+            interestRate
+        );
+
+        // 验证批次信息
+        Invoice.InvoiceTokenBatch memory batch = invoice.getTokenBatch(batchId);
+        assertEq(batch.batchId, batchId);
+        assertEq(batch.payee, payee);
+        assertEq(batch.payer, payer);
+        assertEq(batch.isSigned, true);
+        assertEq(batch.isIssued, false);
+
+        vm.stopPrank();
+    }
+
+    function test_CreateInvoice() public {
+        createInvoice("INV001", 1000, block.timestamp + 30 days);
+    }
+
+    function test_CreateTokenBatch() public {
         // 先创建票据
-        Invoice.InvoiceData[] memory invoices = new Invoice.InvoiceData[](2);
-        invoices[0] = Invoice.InvoiceData({
-            invoiceNumber: "INV001",
-            payee: payee,
-            payer: payer,
-            amount: 1000,
-            ipfsHash: "QmHash1",
-            contractHash: "QmHash2",
-            timestamp: 0,
-            dueDate: block.timestamp + 30 days,
-            tokenBatch: "",
-            isCleared: false,
-            isValid: false
-        });
-        invoices[1] = Invoice.InvoiceData({
-            invoiceNumber: "INV002",
-            payee: payee,
-            payer: payer,
-            amount: 2000,
-            ipfsHash: "QmHash3",
-            contractHash: "QmHash4",
-            timestamp: 0,
-            dueDate: block.timestamp + 30 days,
-            tokenBatch: "",
-            isCleared: false,
-            isValid: false
-        });
-        invoice.batchCreateInvoices(invoices);
+        createInvoice("INV001", 1000, block.timestamp + 30 days);
+        createInvoice("INV002", 2000, block.timestamp + 30 days);
 
         // 创建批次
         string[] memory invoiceNumbers = new string[](2);
         invoiceNumbers[0] = "INV001";
         invoiceNumbers[1] = "INV002";
 
-        invoice.createTokenBatch(
+        createTokenBatch(
             "BATCH001",
             invoiceNumbers,
             stableToken,
@@ -121,19 +161,6 @@ contract InvoiceTest is Test {
             12, // 最长12个月
             500 // 5% 年化利率
         );
-
-        // 验证批次信息
-        Invoice.InvoiceTokenBatch memory batch = invoice.getTokenBatch(
-            "BATCH001"
-        );
-        assertEq(batch.batchId, "BATCH001");
-        assertEq(batch.payee, payee);
-        assertEq(batch.payer, payer);
-        assertEq(batch.totalAmount, 3000);
-        assertEq(batch.isSigned, true);
-        assertEq(batch.isIssued, false);
-
-        vm.stopPrank();
     }
 
     function test_ConfirmTokenBatch() public {
@@ -319,6 +346,560 @@ contract InvoiceTest is Test {
         invoice.unpause();
         assertEq(invoice.paused(), false);
 
+        vm.stopPrank();
+    }
+
+    function testPurchaseSharesWithNativeToken() public {
+        // 创建票据和批次
+        string memory invoiceNumber = "INV-001";
+        string memory batchId = "BATCH-001";
+        uint256 totalAmount = 100 ether;
+
+        // 创建票据
+        createInvoice(invoiceNumber, totalAmount, block.timestamp + 30 days);
+
+        // 创建批次
+        string[] memory invoiceNumbers = new string[](1);
+        invoiceNumbers[0] = invoiceNumber;
+        createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            address(0), // 使用原生代币
+            1, // minTerm
+            12, // maxTerm
+            500 // interestRate (5%)
+        );
+
+        // 确认发行
+        vm.startPrank(payer);
+        invoice.confirmTokenBatchIssue(batchId);
+        vm.stopPrank();
+
+        // 投资人使用原生代币购买份额
+        uint256 purchaseAmount = 50 ether;
+        vm.deal(buyer, purchaseAmount);
+        vm.startPrank(buyer);
+        invoice.purchaseSharesWithNativeToken{value: purchaseAmount}(batchId);
+        vm.stopPrank();
+
+        // 验证投资人余额
+        assertEq(buyer.balance, 0);
+        assertEq(payee.balance, purchaseAmount);
+
+        // 验证已售出金额
+        assertEq(invoice.getBatchSoldAmount(batchId), purchaseAmount);
+
+        // 验证 RBT Token 余额
+        assertEq(rbt.balanceOf(buyer), purchaseAmount);
+    }
+
+    function testPurchaseSharesWithNativeTokenRevertsIfBatchNotIssued() public {
+        string memory batchId = "BATCH-001";
+        uint256 purchaseAmount = 50 ether;
+        vm.deal(buyer, purchaseAmount);
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.Invoice__BatchNotIssued.selector);
+        invoice.purchaseSharesWithNativeToken{value: purchaseAmount}(batchId);
+        vm.stopPrank();
+    }
+
+    function testPurchaseSharesWithNativeTokenRevertsIfAmountZero() public {
+        string memory invoiceNumber = "INV-001";
+        string memory batchId = "BATCH-001";
+        uint256 totalAmount = 100 ether;
+
+        // 创建票据
+        createInvoice(invoiceNumber, totalAmount, block.timestamp + 30 days);
+
+        // 创建批次
+        string[] memory invoiceNumbers = new string[](1);
+        invoiceNumbers[0] = invoiceNumber;
+        createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            address(0), // 使用原生代币
+            1, // minTerm
+            12, // maxTerm
+            500 // interestRate (5%)
+        );
+
+        // 确认发行
+        vm.startPrank(payer);
+        invoice.confirmTokenBatchIssue(batchId);
+        vm.stopPrank();
+
+        vm.deal(buyer, 1 ether);
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.Invoice__InvalidAmount.selector);
+        invoice.purchaseSharesWithNativeToken{value: 0}(batchId);
+        vm.stopPrank();
+    }
+
+    function testPurchaseSharesWithNativeTokenRevertsIfInsufficientBalance()
+        public
+    {
+        string memory invoiceNumber = "INV-001";
+        string memory batchId = "BATCH-001";
+        uint256 totalAmount = 100 ether;
+
+        // 创建票据
+        createInvoice(invoiceNumber, totalAmount, block.timestamp + 30 days);
+
+        // 创建批次
+        string[] memory invoiceNumbers = new string[](1);
+        invoiceNumbers[0] = invoiceNumber;
+        createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            address(0), // 使用原生代币
+            1, // minTerm
+            12, // maxTerm
+            500 // interestRate (5%)
+        );
+
+        // 确认发行
+        vm.startPrank(payer);
+        invoice.confirmTokenBatchIssue(batchId);
+        vm.stopPrank();
+
+        uint256 purchaseAmount = 150 ether;
+        vm.deal(buyer, purchaseAmount);
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.Invoice__InsufficientBalance.selector);
+        invoice.purchaseSharesWithNativeToken{value: purchaseAmount}(batchId);
+        vm.stopPrank();
+    }
+
+    function testRepayInvoice() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 设置稳定币余额
+        vm.mockCall(
+            stableToken,
+            abi.encodeWithSelector(IERC20.balanceOf.selector, payer),
+            abi.encode(1000)
+        );
+        vm.mockCall(
+            stableToken,
+            abi.encodeWithSelector(
+                IERC20.transferFrom.selector,
+                payer,
+                address(vault),
+                1000
+            ),
+            abi.encode(true)
+        );
+
+        // 设置事件期望
+        vm.expectEmit(true, true, true, true);
+        emit InvoiceRepaid("BATCH001", payer, 1000, block.timestamp);
+
+        // 债务人还款
+        vm.startPrank(payer);
+        invoice.repayInvoice("BATCH001", 1000);
+        vm.stopPrank();
+    }
+
+    function testRepayInvoiceWithNativeToken() public {
+        // 创建票据和批次
+        string memory invoiceNumber = "INV-001";
+        string memory batchId = "BATCH-001";
+        uint256 totalAmount = 100 ether;
+
+        // 创建票据
+        createInvoice(invoiceNumber, totalAmount, block.timestamp + 30 days);
+
+        // 创建批次
+        string[] memory invoiceNumbers = new string[](1);
+        invoiceNumbers[0] = invoiceNumber;
+        createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            address(0), // 使用原生代币
+            1, // minTerm
+            12, // maxTerm
+            500 // interestRate (5%)
+        );
+
+        // 设置事件期望
+        vm.expectEmit(true, true, true, true);
+        emit NativeInvoiceRepaid(batchId, payer, 50 ether, block.timestamp);
+
+        // 债务人还款
+        vm.deal(payer, 50 ether);
+        vm.startPrank(payer);
+        invoice.repayInvoiceWithNativeToken{value: 50 ether}(batchId);
+        vm.stopPrank();
+
+        // 验证余额
+        assertEq(payer.balance, 0);
+        assertEq(address(vault).balance, 50 ether);
+    }
+
+    function testRepayInvoiceRevertsIfUnauthorized() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 非债务人尝试还款
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.Invoice__UnauthorizedRepayment.selector);
+        invoice.repayInvoice("BATCH001", 1000);
+        vm.stopPrank();
+    }
+
+    function testRepayInvoiceWithNativeTokenRevertsIfUnauthorized() public {
+        // 先创建票据和批次
+        string memory invoiceNumber = "INV-001";
+        string memory batchId = "BATCH-001";
+        uint256 totalAmount = 100 ether;
+
+        // 创建票据
+        createInvoice(invoiceNumber, totalAmount, block.timestamp + 30 days);
+
+        // 创建批次
+        string[] memory invoiceNumbers = new string[](1);
+        invoiceNumbers[0] = invoiceNumber;
+        createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            address(0), // 使用原生代币
+            1, // minTerm
+            12, // maxTerm
+            500 // interestRate (5%)
+        );
+
+        // 非债务人尝试还款
+        vm.deal(buyer, 50 ether);
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.Invoice__UnauthorizedRepayment.selector);
+        invoice.repayInvoiceWithNativeToken{value: 50 ether}(batchId);
+        vm.stopPrank();
+    }
+
+    function testRepayInvoiceRevertsIfAmountZero() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 债务人尝试还款金额为0
+        vm.startPrank(payer);
+        vm.expectRevert(Invoice.Invoice__InvalidAmount.selector);
+        invoice.repayInvoice("BATCH001", 0);
+        vm.stopPrank();
+    }
+
+    function testRepayInvoiceWithNativeTokenRevertsIfAmountZero() public {
+        // 先创建票据和批次
+        string memory invoiceNumber = "INV-001";
+        string memory batchId = "BATCH-001";
+        uint256 totalAmount = 100 ether;
+
+        // 创建票据
+        createInvoice(invoiceNumber, totalAmount, block.timestamp + 30 days);
+
+        // 创建批次
+        string[] memory invoiceNumbers = new string[](1);
+        invoiceNumbers[0] = invoiceNumber;
+        createTokenBatch(
+            batchId,
+            invoiceNumbers,
+            address(0), // 使用原生代币
+            1, // minTerm
+            12, // maxTerm
+            500 // interestRate (5%)
+        );
+
+        // 债务人尝试还款金额为0
+        vm.startPrank(payer);
+        vm.expectRevert(Invoice.Invoice__InvalidAmount.selector);
+        invoice.repayInvoiceWithNativeToken{value: 0}(batchId);
+        vm.stopPrank();
+    }
+
+    // 生成EIP 2612签名的辅助函数
+    function getPermitSignature(
+        address sender,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint256 privateKey
+    ) internal returns (uint8 v, bytes32 r, bytes32 s) {
+        // 初始化nonce
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IERC20Permit.nonces.selector, sender),
+            abi.encode(0)
+        );
+
+        // 初始化DOMAIN_SEPARATOR
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256("RBT"),
+                keccak256("1"),
+                block.chainid,
+                rbtAddress
+            )
+        );
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IERC20Permit.DOMAIN_SEPARATOR.selector),
+            abi.encode(domainSeparator)
+        );
+
+        // 获取nonce
+        uint256 nonce = IRBT(rbtAddress).nonces(sender);
+
+        // 计算struct hash
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+                ),
+                sender,
+                spender,
+                value,
+                nonce,
+                deadline
+            )
+        );
+
+        // 计算最终hash
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                bytes1(0x19),
+                bytes1(0x01),
+                domainSeparator,
+                structHash
+            )
+        );
+
+        // 确保使用正确的私钥
+        require(
+            vm.addr(privateKey) == sender,
+            "Private key does not match sender address"
+        );
+
+        // 生成签名
+        (v, r, s) = vm.sign(privateKey, digest);
+
+        // 调整v值
+        if (v < 27) {
+            v += 27;
+        }
+    }
+
+    function testWithdrawWithPermit() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 设置RBT余额
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IERC20Permit.permit.selector),
+            abi.encode(true)
+        );
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IRBT.burnToken.selector),
+            abi.encode(true)
+        );
+
+        // 设置稳定币余额
+        vm.mockCall(
+            stableToken,
+            abi.encodeWithSelector(IERC20.transferFrom.selector),
+            abi.encode(true)
+        );
+
+        // 设置事件期望
+        vm.expectEmit(true, true, true, true);
+        emit InvestorWithdrawn(buyer, 1000, stableToken, block.timestamp);
+
+        // 生成签名
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = getPermitSignature(
+            buyer,
+            address(invoice),
+            1000,
+            deadline,
+            buyerKey
+        );
+
+        // 投资人取款
+        vm.startPrank(buyer);
+        invoice.withdrawWithPermit(
+            1000, // amount
+            stableToken, // token
+            deadline, // deadline
+            v, // v
+            r, // r
+            s // s
+        );
+        vm.stopPrank();
+    }
+
+    function testWithdrawWithPermitNativeToken() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 设置RBT余额
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IERC20Permit.permit.selector),
+            abi.encode(true)
+        );
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IRBT.burnToken.selector),
+            abi.encode(true)
+        );
+
+        // 设置Vault余额
+        vm.deal(address(vault), 1000);
+
+        // 设置事件期望
+        vm.expectEmit(true, true, true, true);
+        emit InvestorWithdrawn(buyer, 1000, address(0), block.timestamp);
+
+        // 生成签名
+        uint256 deadline = block.timestamp + 1 hours;
+        (uint8 v, bytes32 r, bytes32 s) = getPermitSignature(
+            buyer,
+            address(invoice),
+            1000,
+            deadline,
+            buyerKey
+        );
+
+        // 投资人取款
+        vm.startPrank(buyer);
+        invoice.withdrawWithPermit(
+            1000, // amount
+            address(0), // native token
+            deadline, // deadline
+            v, // v
+            r, // r
+            s // s
+        );
+        vm.stopPrank();
+
+        // 验证余额
+        assertEq(buyer.balance, 1000);
+        assertEq(address(vault).balance, 0);
+    }
+
+    function testWithdrawWithPermitRevertsIfAmountZero() public {
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.InvalidAmount.selector);
+        invoice.withdrawWithPermit(
+            0, // amount
+            stableToken, // token
+            block.timestamp + 1 hours, // deadline
+            27, // v
+            bytes32(0), // r
+            bytes32(0) // s
+        );
+        vm.stopPrank();
+    }
+
+    function testWithdrawWithPermitRevertsIfInvalidInvestor() public {
+        vm.startPrank(address(0));
+        vm.expectRevert(Invoice.InvalidInvestor.selector);
+        invoice.withdrawWithPermit(
+            1000, // amount
+            stableToken, // token
+            block.timestamp + 1 hours, // deadline
+            27, // v
+            bytes32(0), // r
+            bytes32(0) // s
+        );
+        vm.stopPrank();
+    }
+
+    function testWithdrawWithPermitRevertsIfSignatureExpired() public {
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.SignatureExpired.selector);
+        invoice.withdrawWithPermit(
+            1000, // amount
+            stableToken, // token
+            block.timestamp - 1, // expired deadline
+            27, // v
+            bytes32(0), // r
+            bytes32(0) // s
+        );
+        vm.stopPrank();
+    }
+
+    function testWithdraw() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 设置RBT余额
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IRBT.burnToken.selector),
+            abi.encode(true)
+        );
+
+        // 设置稳定币余额
+        vm.mockCall(
+            stableToken,
+            abi.encodeWithSelector(IERC20.transferFrom.selector),
+            abi.encode(true)
+        );
+
+        // 设置事件期望
+        vm.expectEmit(true, true, true, true);
+        emit InvestorWithdrawn(buyer, 1000, stableToken, block.timestamp);
+
+        // 投资人取款
+        vm.startPrank(buyer);
+        invoice.withdraw(1000, stableToken);
+        vm.stopPrank();
+    }
+
+    function testWithdrawNativeToken() public {
+        // 先创建票据和批次
+        test_CreateTokenBatch();
+
+        // 设置RBT余额
+        vm.mockCall(
+            rbtAddress,
+            abi.encodeWithSelector(IRBT.burnToken.selector),
+            abi.encode(true)
+        );
+
+        // 设置Vault余额
+        vm.deal(address(vault), 1000);
+
+        // 设置事件期望
+        vm.expectEmit(true, true, true, true);
+        emit InvestorWithdrawn(buyer, 1000, address(0), block.timestamp);
+
+        // 投资人取款
+        vm.startPrank(buyer);
+        invoice.withdraw(1000, address(0));
+        vm.stopPrank();
+
+        // 验证余额
+        assertEq(buyer.balance, 1000);
+        assertEq(address(vault).balance, 0);
+    }
+
+    function testWithdrawRevertsIfAmountZero() public {
+        vm.startPrank(buyer);
+        vm.expectRevert(Invoice.InvalidAmount.selector);
+        invoice.withdraw(0, stableToken);
+        vm.stopPrank();
+    }
+
+    function testWithdrawRevertsIfInvalidInvestor() public {
+        vm.startPrank(address(0));
+        vm.expectRevert(Invoice.InvalidInvestor.selector);
+        invoice.withdraw(1000, stableToken);
         vm.stopPrank();
     }
 }

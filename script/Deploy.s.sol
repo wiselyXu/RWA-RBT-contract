@@ -25,7 +25,7 @@ contract DeployInvoice is Script {
             address(vaultImplementation),
             vaultInitData
         );
-        return Vault(address(vaultProxy));
+        return Vault(payable(address(vaultProxy)));
     }
 
     function deployRBT() internal returns (RBT) {
@@ -59,11 +59,6 @@ contract DeployInvoice is Script {
         HelperConfig.NetworkConfig memory networkConfig = config
             .getActiveNetworkConfig();
         uint256 deployerKey = networkConfig.deployerKey;
-        address deployer = vm.addr(deployerKey);
-
-        // // 检查部署者余额
-        // uint256 balance = deployer.balance;
-        // require(balance > 0, "Deployer has no ETH");
 
         vm.startBroadcast(deployerKey);
 
@@ -75,6 +70,9 @@ contract DeployInvoice is Script {
         // 设置 RBT 的 Invoice 地址
         rbt.setInvoiceAddress(address(invoice));
 
+        // 设置 Vault 的所有者为 Invoice 合约
+        vault.transferOwnership(address(invoice));
+
         // 验证合约初始化
         require(address(vault) != address(0), "Vault not initialized");
         require(address(rbt) != address(0), "RBT not initialized");
@@ -82,21 +80,15 @@ contract DeployInvoice is Script {
             invoice.vaultAddress() == address(vault),
             "Invoice vault address mismatch"
         );
-        require(
+        require( 
             invoice.rbtAddress() == address(rbt),
             "Invoice RBT address mismatch"
         );
+        require(vault.owner() == address(invoice), "Vault owner mismatch");
 
         vm.stopBroadcast();
 
-        // 输出部署信息
-        console.log("Deployment successful!");
-        console.log("Deployer address:", deployer);
-        console.log("Vault address:", address(vault));
-        console.log("RBT address:", address(rbt));
-        console.log("Invoice address:", address(invoice));
-        // console.log("Deployer balance:", balance);
-
+        // 返回合约实例
         return (invoice, vault, rbt, config);
     }
 }
